@@ -22,6 +22,13 @@ const API_VERSION = "0.0.1";
 let sensorData = [];
 let connectedDevices = {}; // Registry perangkat ESP32 yang pernah ping/kirim data
 
+// Command queue per device — ESP32 cek ini untuk tahu kapan harus kirim data
+// Format: { "ESP32_ALAT_01": { command: "send", timestamp: "..." }, ... }
+let pendingCommands = {};
+
+// Live reading terakhir dari setiap device (selalu update, tanpa harus kirim ke sensorData)
+let liveReadings = {};
+
 // ============================================================
 //  ROUTES
 // ============================================================
@@ -216,12 +223,142 @@ app.get("/api", (req, res) => {
       "GET    /api":                     "Health check & info server",
       "GET    /api/ping?device_id=X":    "Ping test untuk ESP32 (cek koneksi)",
       "GET    /api/devices":             "Daftar perangkat yang pernah terhubung",
-      "POST   /api/sensor":              "Kirim data sensor dari ESP32",
+      "POST   /api/sensor":              "Kirim data sensor dari ESP32 (on-demand)",
       "GET    /api/sensor":              "Ambil semua data sensor",
       "GET    /api/sensor?latest=true":  "Ambil data sensor terbaru",
       "GET    /api/sensor?limit=N":      "Ambil N data sensor terbaru",
       "DELETE /api/sensor":              "Hapus semua data sensor",
+      "POST   /api/command":             "Kirim perintah ke ESP32 (e.g. 'send')",
+      "GET    /api/command?device_id=X": "ESP32 cek apakah ada perintah pending",
+      "POST   /api/sensor/live":         "ESP32 update live reading (tanpa simpan)",
+      "GET    /api/sensor/live":          "Ambil live reading terbaru",
     },
+  });
+});
+
+// ============================================================
+//  COMMAND QUEUE — Mengontrol kapan ESP32 kirim data
+// ============================================================
+
+/**
+ * POST /api/command
+ * Frontend/user mengirim perintah ke ESP32.
+ * Body JSON: { "device_id": "ESP32_ALAT_01", "command": "send" }
+ * Command yang didukung: "send" (perintahkan ESP32 kirim data sensor)
+ */
+app.post("/api/command", (req, res) => {
+  const { device_id, command } = req.body;
+
+  if (!device_id || !command) {
+    return res.status(400).json({
+      success: false,
+      message: "Field 'device_id' dan 'command' wajib diisi.",
+    });
+  }
+
+  const validCommands = ["send"];
+  if (!validCommands.includes(command)) {
+    return res.status(400).json({
+      success: false,
+      message: `Command '${command}' tidak valid. Gunakan: ${validCommands.join(", ")}`,
+    });
+  }
+
+  pendingCommands[device_id] = {
+    command,
+    timestamp: new Date().toISOString(),
+  };
+
+  console.log(`[COMMAND] '${command}' dijadwalkan untuk device: ${device_id}`);
+
+  return res.status(200).json({
+    success: true,
+    message: `Command '${command}' berhasil dijadwalkan untuk ${device_id}.`,
+    data: pendingCommands[device_id],
+  });
+});
+
+/**
+ * GET /api/command?device_id=ESP32_ALAT_01
+ * ESP32 polling endpoint ini untuk cek apakah ada perintah.
+ * Jika ada command pending, server mengembalikannya lalu MENGHAPUS command
+ * (consume sekali pakai).
+ */
+app.get("/api/command", (req, res) => {
+  const deviceId = req.query.device_id || "unknown";
+
+  if (pendingCommands[deviceId]) {
+    const cmd = pendingCommands[deviceId];
+    delete pendingCommands[deviceId]; // Consume — sekali pakai
+
+    console.log(`[COMMAND] Device ${deviceId} mengambil command: '${cmd.command}'`);
+
+    return res.status(200).json({
+      success: true,
+      command: cmd.command,
+      timestamp: cmd.timestamp,
+    });
+  }
+
+  // Tidak ada command pending
+  return res.status(200).json({
+    success: true,
+    command: "none",
+  });
+});
+
+/**
+ * POST /api/sensor/live
+ * ESP32 mengirim live reading (selalu update) tanpa menyimpan ke sensorData.
+ * Ini supaya frontend bisa lihat data real-time tanpa trigger "kirim ke API".
+ * Body JSON: { "suhu": 28.5, "kelembapan": 65.2, "device_id": "ESP32_ALAT_01" }
+ */
+app.post("/api/sensor/live", (req, res) => {
+  const { suhu, kelembapan, device_id } = req.body;
+
+  if (suhu === undefined || kelembapan === undefined) {
+    return res.status(400).json({
+      success: false,
+      message: "Field 'suhu' dan 'kelembapan' wajib diisi.",
+    });
+  }
+
+  const deviceName = device_id || "unknown";
+  liveReadings[deviceName] = {
+    suhu,
+    kelembapan,
+    updated_at: new Date().toISOString(),
+  };
+
+  return res.status(200).json({
+    success: true,
+    message: "Live reading updated.",
+  });
+});
+
+/**
+ * GET /api/sensor/live?device_id=ESP32_ALAT_01
+ * Ambil live reading terbaru dari device tertentu.
+ */
+app.get("/api/sensor/live", (req, res) => {
+  const deviceId = req.query.device_id;
+
+  if (deviceId && liveReadings[deviceId]) {
+    return res.status(200).json({
+      success: true,
+      data: { device_id: deviceId, ...liveReadings[deviceId] },
+    });
+  }
+
+  // Jika tidak ada device_id, kirim semua live readings
+  const allReadings = Object.entries(liveReadings).map(([id, info]) => ({
+    device_id: id,
+    ...info,
+  }));
+
+  return res.status(200).json({
+    success: true,
+    data: allReadings,
   });
 });
 
