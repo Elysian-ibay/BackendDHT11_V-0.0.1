@@ -5,13 +5,17 @@
 [![GitHub](https://img.shields.io/badge/GitHub-BackendDHT11__V--0.0.1-181717?logo=github)](https://github.com/Elysian-ibay/BackendDHT11_V-0.0.1)
 
 REST API Backend untuk proyek IoT **Stasiun Cuaca Mini** menggunakan ESP32 + sensor DHT11.  
-API ini menerima data suhu & kelembapan dari ESP32, menyimpannya, dan menyediakannya untuk frontend/dashboard.
+API ini menerima data suhu & kelembapan dari ESP32 **on-demand** (hanya saat diperintahkan), menyimpannya, dan menyediakannya untuk frontend/dashboard.
+
+> ⚠️ **Perubahan Penting:** ESP32 **TIDAK lagi mengirim data otomatis** setiap 5 detik.  
+> Sekarang menggunakan sistem **Command Queue** — ESP32 hanya kirim data saat ada perintah `"send"` dari server.
 
 ---
 
 ## 📋 Daftar Isi
 
 - [Fitur](#-fitur)
+- [Cara Kerja (Command-Based)](#-cara-kerja-command-based)
 - [Tech Stack](#-tech-stack)
 - [Struktur Folder](#-struktur-folder)
 - [Instalasi & Setup](#-instalasi--setup)
@@ -27,7 +31,9 @@ API ini menerima data suhu & kelembapan dari ESP32, menyimpannya, dan menyediaka
 
 | Fitur | Status |
 |-------|--------|
-| Terima data sensor dari ESP32 (POST) | ✅ |
+| Command Queue — ESP32 kirim data hanya saat diminta | ✅ |
+| Live Reading — monitoring real-time tanpa simpan permanen | ✅ |
+| Terima data sensor dari ESP32 (POST on-demand) | ✅ |
 | Ambil data sensor untuk dashboard (GET) | ✅ |
 | Ping/heartbeat test untuk ESP32 | ✅ |
 | Device registry (tracking perangkat) | ✅ |
@@ -40,6 +46,54 @@ API ini menerima data suhu & kelembapan dari ESP32, menyimpannya, dan menyediaka
 
 ---
 
+## 🔄 Cara Kerja (Command-Based)
+
+```
+┌─────────────────┐                  ┌───────────────────────┐
+│   ESP32 + DHT11 │                  │  Backend API (Vercel) │
+│   + OLED + Buzz │                  │  Node.js + Express.js │
+└────────┬────────┘                  └───────────┬───────────┘
+         │                                       │
+         │  [Setiap 5 detik - LOOP]              │
+         │                                       │
+         │  1. Baca sensor DHT11                 │
+         │     → Tampilkan di OLED               │
+         │                                       │
+         │  2. POST /api/sensor/live              │
+         │     → Update live reading (tiap 10s)  │
+         │ ─────────────────────────────────────> │
+         │                                       │
+         │  3. GET /api/command?device_id=X       │
+         │     → Polling: ada command "send"?     │
+         │ ─────────────────────────────────────> │
+         │                                       │
+         │     Jika command = "none":             │
+         │     OLED: "Status: Standby"            │
+         │                                       │
+         │     Jika command = "send":             │
+         │  4. POST /api/sensor                   │
+         │     → Kirim data sensor ke API         │
+         │ ─────────────────────────────────────> │
+         │     OLED: "Sukses Ngirim API!"         │
+         │     Buzzer: 🔔 beep beep               │
+         │                                       │
+
+  ┌──────────────────────┐
+  │  Frontend / Postman  │
+  │  POST /api/command   │ ← User trigger "send"
+  │  {device_id, "send"} │
+  └──────────────────────┘
+```
+
+**Ringkasan:**
+1. **Sensor selalu aktif** — baca suhu & kelembapan, tampil di OLED
+2. **Live reading** dikirim ke server tiap 10 detik (tidak disimpan permanen)
+3. **ESP32 polling** command dari server tiap 5 detik
+4. **Data hanya dikirim** ke `POST /api/sensor` kalau ada command `"send"`
+5. **Command sekali pakai** — setelah diambil ESP32, otomatis terhapus dari server
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Runtime:** Node.js
@@ -47,6 +101,8 @@ API ini menerima data suhu & kelembapan dari ESP32, menyimpannya, dan menyediaka
 - **Middleware:** cors, express.json (body-parser)
 - **Hosting:** Vercel Serverless Functions
 - **Sensor:** ESP32 + DHT11
+- **Display:** OLED SSD1306 128x64
+- **Notifikasi:** Buzzer Pasif
 
 ---
 
@@ -56,11 +112,16 @@ API ini menerima data suhu & kelembapan dari ESP32, menyimpannya, dan menyediaka
 DHT11/
 ├── api/
 │   └── index.js          ← Express app (entry point Vercel)
+├── SketchArduinoIDE/
+│   └── DHT11-ESP32/
+│       └── sketch_jun5a/
+│           └── sketch_jun5a.ino  ← Firmware ESP32 (command-based)
 ├── server.js             ← Entry point development lokal (app.listen)
 ├── package.json          ← Dependencies & scripts
 ├── vercel.json           ← Konfigurasi routing Vercel
 ├── .gitignore
 ├── README.md             ← File ini
+├── USER_GUIDE_API.MD     ← Panduan testing Postman (untuk teman)
 └── DOCS_SUMMARY.md       ← Ringkasan proyek untuk AI lanjutan
 ```
 
@@ -103,7 +164,7 @@ npm start
 
 ## 📡 Daftar Endpoint API
 
-**Base URL:** `http://localhost:3000` (lokal) atau `https://nama-proyek.vercel.app` (produksi)
+**Base URL:** `http://localhost:3000` (lokal) atau `https://backend-dht-11-v-0-0-1.vercel.app` (produksi)
 
 ### 1. Health Check
 
@@ -171,12 +232,14 @@ GET /api/devices
 
 ---
 
-### 4. Kirim Data Sensor (dari ESP32)
+### 4. Kirim Data Sensor — On-Demand (dari ESP32)
 
 ```
 POST /api/sensor
 Content-Type: application/json
 ```
+
+> ⚠️ ESP32 sekarang hanya mengirim ke endpoint ini **saat ada command `"send"`** dari server.
 
 **Body:**
 ```json
@@ -269,6 +332,140 @@ DELETE /api/sensor
 
 ---
 
+### 7. 🎮 Command Queue — Perintahkan ESP32 Kirim Data (BARU!)
+
+#### A. Kirim Perintah ke ESP32
+
+```
+POST /api/command
+Content-Type: application/json
+```
+
+**Body:**
+```json
+{
+  "device_id": "ESP32_ALAT_01",
+  "command": "send"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Command 'send' berhasil dijadwalkan untuk ESP32_ALAT_01.",
+  "data": {
+    "command": "send",
+    "timestamp": "2026-06-05T02:00:00.000Z"
+  }
+}
+```
+
+> ⚠️ Command bersifat **sekali pakai**. Setelah ESP32 mengambilnya, command otomatis terhapus.
+
+**Command yang tersedia:**
+
+| Command | Fungsi |
+|---------|--------|
+| `"send"` | Perintahkan ESP32 mengirim data sensor terkini ke `POST /api/sensor` |
+
+**Error Responses:**
+
+| Kasus | Status | Response |
+|-------|--------|----------|
+| Field kosong `{}` | 400 | `"Field 'device_id' dan 'command' wajib diisi."` |
+| Command tidak valid | 400 | `"Command 'xyz' tidak valid. Gunakan: send"` |
+
+#### B. Cek Command Pending (Dipakai ESP32)
+
+```
+GET /api/command?device_id=ESP32_ALAT_01
+```
+
+**Response — Ada command (200):**
+```json
+{
+  "success": true,
+  "command": "send",
+  "timestamp": "2026-06-05T02:00:00.000Z"
+}
+```
+
+**Response — Tidak ada command (200):**
+```json
+{
+  "success": true,
+  "command": "none"
+}
+```
+
+---
+
+### 8. 📡 Live Reading — Monitoring Real-Time (BARU!)
+
+ESP32 mengirim live reading setiap ~10 detik. Data ini **TIDAK disimpan permanen** — hanya di-overwrite sebagai "pembacaan terkini".
+
+#### A. Update Live Reading (Dipakai ESP32)
+
+```
+POST /api/sensor/live
+Content-Type: application/json
+```
+
+**Body:**
+```json
+{
+  "suhu": 28.5,
+  "kelembapan": 65.2,
+  "device_id": "ESP32_ALAT_01"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Live reading updated."
+}
+```
+
+#### B. Ambil Live Reading Device Tertentu
+
+```
+GET /api/sensor/live?device_id=ESP32_ALAT_01
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "device_id": "ESP32_ALAT_01",
+    "suhu": 28.5,
+    "kelembapan": 65.2,
+    "updated_at": "2026-06-05T02:00:00.000Z"
+  }
+}
+```
+
+#### C. Ambil Semua Live Reading
+
+```
+GET /api/sensor/live
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": [
+    { "device_id": "ESP32_ALAT_01", "suhu": 28.5, "kelembapan": 65.2, "updated_at": "..." }
+  ]
+}
+```
+
+---
+
 ## 🧪 Panduan Testing Postman
 
 ### Step 1 — Jalankan server
@@ -280,18 +477,33 @@ npm start
 
 | # | Method | URL | Body (raw JSON) | Expected |
 |---|--------|-----|------------------|----------|
-| 1 | `GET` | `http://localhost:3000/api` | — | Health check OK |
-| 2 | `GET` | `http://localhost:3000/api/ping?device_id=ESP32_001` | — | `"message": "pong"` |
-| 3 | `POST` | `http://localhost:3000/api/sensor` | `{"suhu": 28.5, "kelembapan": 65.2, "device_id": "ESP32_001"}` | Status `201` |
-| 4 | `POST` | `http://localhost:3000/api/sensor` | `{"suhu": 30.1, "kelembapan": 70.5, "device_id": "ESP32_001"}` | Status `201` |
-| 5 | `POST` | `http://localhost:3000/api/sensor` | `{"suhu": 32.0, "kelembapan": 55.3, "device_id": "ESP32_001"}` | Status `201` |
-| 6 | `GET` | `http://localhost:3000/api/sensor` | — | 3 data |
-| 7 | `GET` | `http://localhost:3000/api/sensor?latest=true` | — | 1 data terbaru |
-| 8 | `GET` | `http://localhost:3000/api/devices` | — | 1 perangkat |
-| 9 | `POST` | `http://localhost:3000/api/sensor` | `{}` | Status `400` |
-| 10 | `DELETE` | `http://localhost:3000/api/sensor` | — | Data dihapus |
+| 1 | `GET` | `/api` | — | Health check OK |
+| 2 | `GET` | `/api/ping?device_id=ESP32_ALAT_01` | — | `"message": "pong"` |
+| 3 | `POST` | `/api/sensor/live` | `{"suhu": 28.5, "kelembapan": 65.2, "device_id": "ESP32_ALAT_01"}` | `"Live reading updated."` |
+| 4 | `GET` | `/api/sensor/live?device_id=ESP32_ALAT_01` | — | Lihat live reading |
+| 5 | `GET` | `/api/command?device_id=ESP32_ALAT_01` | — | `"command": "none"` |
+| 6 | `POST` | `/api/command` | `{"device_id": "ESP32_ALAT_01", "command": "send"}` | Command dijadwalkan |
+| 7 | `GET` | `/api/command?device_id=ESP32_ALAT_01` | — | `"command": "send"` (consumed!) |
+| 8 | `GET` | `/api/command?device_id=ESP32_ALAT_01` | — | `"command": "none"` (sudah consumed) |
+| 9 | `POST` | `/api/sensor` | `{"suhu": 28.5, "kelembapan": 65.2, "device_id": "ESP32_ALAT_01"}` | Status `201` |
+| 10 | `GET` | `/api/sensor?latest=true` | — | 1 data terbaru |
+| 11 | `GET` | `/api/devices` | — | Perangkat terdaftar |
+| 12 | `DELETE` | `/api/sensor` | — | Data dihapus |
 
 > **Tip:** Di Postman, pastikan pilih tab **Body → raw → JSON** saat mengirim POST request.
+
+### Flow Lengkap Testing (Simulasi ESP32):
+
+```
+1. GET /api                         → Pastikan server hidup
+2. POST /api/sensor/live            → Simulasi ESP32 kirim live reading
+3. GET /api/sensor/live             → Cek live reading masuk
+4. GET /api/command?device_id=...   → Cek: belum ada command → "none"
+5. POST /api/command                → Kirim perintah {"command":"send"}
+6. GET /api/command?device_id=...   → ESP32 ambil command → "send" (consumed!)
+7. POST /api/sensor                 → ESP32 kirim data sensor (karena ada command)
+8. GET /api/sensor?latest=true      → Verifikasi data tersimpan
+```
 
 ---
 
@@ -309,143 +521,86 @@ npm start
 | WiFi Password | Firmware ESP32 | Edit kode → re-flash |
 | Server URL | Firmware ESP32 | Edit kode → re-flash |
 | Device ID | Firmware ESP32 | Edit kode → re-flash |
-| Delay interval | Firmware ESP32 | Edit kode → re-flash |
-| Sensor pin (GPIO) | Firmware ESP32 | Edit kode → re-flash |
+| Polling interval | Firmware ESP32 (5 detik) | Edit `delay()` di `loop()` → re-flash |
+| Live reading interval | Firmware ESP32 (10 detik) | Edit `LIVE_INTERVAL` → re-flash |
+| Sensor pin (GPIO) | Firmware ESP32 | Edit `DHTPIN` → re-flash |
 
-### Kode Arduino IDE (ESP32 + DHT11)
+### Kode Arduino IDE (ESP32 + DHT11 + OLED + Buzzer)
+
+File sketch lengkap tersedia di: `SketchArduinoIDE/DHT11-ESP32/sketch_jun5a/sketch_jun5a.ino`
 
 ```cpp
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <DHT.h>
+// === RINGKASAN FUNGSI UTAMA ===
 
-// ===== KONFIGURASI HARDCODED — EDIT SESUAI KEBUTUHAN =====
-#define DHTPIN 4              // Pin GPIO sensor DHT11
-#define DHTTYPE DHT11         // Tipe sensor
-#define DELAY_MS 10000        // Interval kirim data (ms) — 10 detik
+// Cek apakah ada command "send" dari server
+bool cekCommandDariServer() {
+  // GET /api/command?device_id=ESP32_ALAT_01
+  // Return true jika command = "send"
+}
 
-const char* ssid         = "NAMA_WIFI_KAMU";       // ← Ganti!
-const char* password     = "PASSWORD_WIFI_KAMU";    // ← Ganti!
-const char* deviceId     = "ESP32_001";             // ← Ganti sesuai device
+// Kirim data sensor ke API (hanya saat diminta)
+bool kirimDataSensor(float suhu, float kelembapan) {
+  // POST /api/sensor
+}
 
-// ===== GANTI URL INI =====
-// Lokal  : "http://192.168.1.x:3000"
-// Vercel : "https://nama-proyek.vercel.app"
-const char* serverBase   = "http://192.168.1.x:3000"; // ← Ganti!
-
-DHT dht(DHTPIN, DHTTYPE);
-
-void setup() {
-  Serial.begin(115200);
-  dht.begin();
-
-  // ----- Koneksi WiFi -----
-  WiFi.begin(ssid, password);
-  Serial.print("Menghubungkan ke WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\n✅ WiFi Connected!");
-  Serial.print("   IP Address: ");
-  Serial.println(WiFi.localIP());
-
-  // ----- Ping Test ke Server -----
-  pingServer();
+// Kirim live reading (update berkala, tidak disimpan permanen)
+void kirimLiveReading(float suhu, float kelembapan) {
+  // POST /api/sensor/live
 }
 
 void loop() {
-  float suhu = dht.readTemperature();
-  float kelembapan = dht.readHumidity();
-
-  if (isnan(suhu) || isnan(kelembapan)) {
-    Serial.println("❌ Gagal membaca sensor DHT11!");
-    delay(5000);
-    return;
-  }
-
-  Serial.printf("📡 Suhu: %.1f°C | Kelembapan: %.1f%%\n", suhu, kelembapan);
-  kirimData(suhu, kelembapan);
-
-  delay(DELAY_MS); // Interval kirim data (default: 10 detik)
-}
-
-// ===== FUNGSI: Ping ke server untuk cek koneksi =====
-void pingServer() {
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  HTTPClient http;
-  String pingURL = String(serverBase) + "/api/ping?device_id=" + deviceId;
-
-  http.begin(pingURL);
-  int httpCode = http.GET();
-
-  if (httpCode == 200) {
-    Serial.println("✅ Server merespon: PONG!");
-    Serial.println("   Response: " + http.getString());
-  } else {
-    Serial.printf("❌ Server tidak merespon. HTTP Code: %d\n", httpCode);
-  }
-
-  http.end();
-}
-
-// ===== FUNGSI: Kirim data sensor ke API =====
-void kirimData(float suhu, float kelembapan) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("❌ WiFi terputus!");
-    return;
-  }
-
-  HTTPClient http;
-  String sensorURL = String(serverBase) + "/api/sensor";
-
-  http.begin(sensorURL);
-  http.addHeader("Content-Type", "application/json");
-
-  // Buat JSON payload
-  String jsonPayload = "{\"suhu\":" + String(suhu, 1) +
-                       ",\"kelembapan\":" + String(kelembapan, 1) +
-                       ",\"device_id\":\"" + deviceId + "\"}";
-
-  int httpCode = http.POST(jsonPayload);
-
-  if (httpCode == 201) {
-    Serial.println("✅ Data berhasil dikirim ke server!");
-    Serial.println("   Response: " + http.getString());
-  } else {
-    Serial.printf("❌ Gagal kirim data. HTTP Code: %d\n", httpCode);
-    if (httpCode > 0) {
-      Serial.println("   Response: " + http.getString());
-    }
-  }
-
-  http.end();
+  // 1. Baca sensor DHT11 → Tampilkan di OLED (SELALU)
+  // 2. Kirim live reading tiap 10 detik
+  // 3. Polling GET /api/command
+  //    → Jika "send" → POST /api/sensor → Buzzer beep
+  //    → Jika "none" → OLED: "Status: Standby"
 }
 ```
 
-### Alur Kerja ESP32 → API
+### Alur Kerja ESP32 → API (Command-Based)
 
 ```
-┌─────────────┐         ┌──────────────────┐
-│   ESP32     │         │   Backend API    │
-│  + DHT11    │         │  (Express.js)    │
-└──────┬──────┘         └────────┬─────────┘
-       │                         │
-       │  1. GET /api/ping       │
-       │ ───────────────────────>│  ← Cek server hidup
-       │         "pong" 200      │
-       │ <───────────────────────│
-       │                         │
-       │  2. POST /api/sensor    │
-       │  {suhu, kelembapan}     │
-       │ ───────────────────────>│  ← Kirim data sensor
-       │         201 Created     │
-       │ <───────────────────────│
-       │                         │
-       │     (ulangi setiap      │
-       │      10 detik)          │
-       │                         │
+┌─────────────┐         ┌──────────────────┐         ┌──────────────┐
+│   ESP32     │         │   Backend API    │         │  User/       │
+│  + DHT11    │         │  (Express.js)    │         │  Frontend    │
+│  + OLED     │         │  Vercel          │         │  Postman     │
+└──────┬──────┘         └────────┬─────────┘         └──────┬───────┘
+       │                         │                          │
+       │  [Boot]                 │                          │
+       │  GET /api/ping          │                          │
+       │ ───────────────────────>│  ← Cek server hidup     │
+       │         "pong" 200      │                          │
+       │ <───────────────────────│                          │
+       │                         │                          │
+       │  [Setiap 10 detik]      │                          │
+       │  POST /api/sensor/live  │                          │
+       │  {suhu, kelembapan}     │                          │
+       │ ───────────────────────>│  ← Update live reading   │
+       │                         │                          │
+       │  [Setiap 5 detik]       │                          │
+       │  GET /api/command       │                          │
+       │ ───────────────────────>│                          │
+       │    "command": "none"    │                          │
+       │ <───────────────────────│                          │
+       │  OLED: "Standby"       │                          │
+       │                         │                          │
+       │                         │  POST /api/command       │
+       │                         │  {"command": "send"}     │
+       │                         │ <────────────────────────│ ← User trigger!
+       │                         │                          │
+       │  GET /api/command       │                          │
+       │ ───────────────────────>│                          │
+       │    "command": "send"    │  ← Command consumed!     │
+       │ <───────────────────────│                          │
+       │                         │                          │
+       │  POST /api/sensor       │                          │
+       │  {suhu, kelembapan}     │                          │
+       │ ───────────────────────>│  ← Data disimpan!        │
+       │         201 Created     │                          │
+       │ <───────────────────────│                          │
+       │  OLED: "Sukses!"       │                          │
+       │  Buzzer: 🔔 beep beep  │                          │
+       │                         │                          │
 ```
 
 ---
@@ -455,23 +610,14 @@ void kirimData(float suhu, float kelembapan) {
 **Repository:** https://github.com/Elysian-ibay/BackendDHT11_V-0.0.1
 
 ```bash
-# 1. Inisialisasi git (jika belum)
-git init
-
-# 2. Tambahkan remote repository
-git remote add origin https://github.com/Elysian-ibay/BackendDHT11_V-0.0.1.git
-
-# 3. Stage semua file
+# Stage semua perubahan
 git add .
 
-# 4. Commit
-git commit -m "v0.0.1 — Initial release: REST API Stasiun Cuaca Mini"
+# Commit
+git commit -m "feat: command-based API - ESP32 kirim data hanya saat diminta"
 
-# 5. Rename branch ke main (jika perlu)
-git branch -M main
-
-# 6. Push ke GitHub
-git push -u origin main
+# Push ke GitHub → Vercel auto-deploy
+git push origin main
 ```
 
 ---
@@ -485,7 +631,7 @@ git push -u origin main
 3. Import repository **`Elysian-ibay/BackendDHT11_V-0.0.1`** dari GitHub
 4. Vercel akan otomatis mendeteksi `vercel.json`
 5. Klik **"Deploy"** — selesai!
-6. Setiap kali push ke GitHub, Vercel auto-deploy ✅
+6. Setiap kali push ke GitHub, Vercel **auto-deploy** ✅ (tidak perlu build ulang manual)
 
 ### Opsi B: Via Vercel CLI
 
@@ -507,7 +653,7 @@ vercel --prod
 
 Ganti `serverBase` di kode ESP32 dengan URL Vercel:
 ```cpp
-const char* serverBase = "https://nama-proyek.vercel.app";
+const char* serverBase = "https://backend-dht-11-v-0-0-1.vercel.app";
 ```
 
 > ⚠️ **Penting:** In-memory storage akan reset setiap kali Vercel cold-start.  
@@ -516,6 +662,17 @@ const char* serverBase = "https://nama-proyek.vercel.app";
 ---
 
 ## 📝 Changelog
+
+### v0.0.1-update2 — 2026-06-05
+**Command-Based Architecture**
+- ✅ `POST /api/command` — Kirim perintah "send" ke ESP32
+- ✅ `GET /api/command` — ESP32 polling cek command (consume sekali pakai)
+- ✅ `POST /api/sensor/live` — Update live reading real-time (tidak disimpan permanen)
+- ✅ `GET /api/sensor/live` — Ambil live reading terbaru
+- ✅ ESP32 sketch diubah ke mode command-based (tidak kirim otomatis)
+- ✅ OLED menampilkan "Standby" saat idle, "Mengirim API" saat kirim
+- ✅ Buzzer notifikasi saat kirim data
+- ✅ `USER_GUIDE_API.MD` — Panduan testing Postman
 
 ### v0.0.1 — 2026-06-05
 **Initial Release — Foundation**
